@@ -17,7 +17,7 @@
   function tokenize(text) {
     return text
       .toLowerCase()
-      .replace(/[^a-z0-9À-￿'\s]/g, " ")
+      .replace(/[^a-z0-9\u00C0-\u00FF'\s]/g, " ")
       .split(/\s+/)
       .map((w) => w.replace(/^'+|'+$/g, "").replace(/(ing|ed|es|s)$/, ""))
       .filter((w) => w.length > 2 && !STOP.has(w));
