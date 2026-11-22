@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Topic Skipper",
+  "version": "0.1.0",
+  "description": "Skip to the next topic or joke instead of 10 seconds at a time.",
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["src/segment.js", "src/transcript.js", "src/content.js"],
+      "css": ["src/content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
