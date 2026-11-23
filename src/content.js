@@ -1,8 +1,18 @@
 (function () {
   const { segment } = window.TopicSkipperSegment;
   const { fetchCues } = window.TopicSkipperTranscript;
+  const Llm = window.TopicSkipperLlm; // pure helpers only; the API call happens in the background worker
+
+  const WINDOW_SEC = 300; // transcript sent to the AI per request
+  const PREFETCH_SEC = 120; // load the next window when the player is this close to the edge of what's analysed
+  const MAX_SKIP_WINDOWS = 8; // while skipping an unfinished story, give up after this many extensions
+  const RETRY_MS = 15000;
 
   let cues = null, segments = [], currentVideo = null, root = null;
+  let mode = "basic"; // "ai": lazy windowed Claude analysis; "basic": local algorithm over the whole transcript
+  let state = null; // ai mode: {bits, lo, hi}, known bits for [lo, hi)
+  let inflight = null, retryAfter = 0, lastError = "";
+
   const store = {
     get: (k, d) => { try { return JSON.parse(localStorage.getItem("topicSkipper." + k)) ?? d; } catch { return d; } },
     set: (k, v) => { try { localStorage.setItem("topicSkipper." + k, JSON.stringify(v)); } catch {} },
@@ -10,6 +20,7 @@
 
   const videoEl = () => document.querySelector("video.html5-main-video");
   const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  const cacheKey = () => `seg2:${currentVideo}`;
 
   function currentIndex(t) {
     let idx = 0;
@@ -17,17 +28,77 @@
     return idx;
   }
 
-  function next() {
+  // ---- AI windows -------------------------------------------------------------------------------
+
+  async function persist() {
+    try { await chrome.storage.local.set({ [cacheKey()]: state }); } catch {}
+  }
+
+  // Analyse the next window, restarting at the unfinished last bit so a long story is judged as a whole.
+  function extend() {
+    if (inflight) return inflight;
+    const duration = videoEl().duration;
+    if (state.hi >= duration) return Promise.resolve();
+    const id = currentVideo;
+    const { from, to } = Llm.nextWindow(state, duration, WINDOW_SEC);
+    inflight = (async () => {
+      try {
+        const r = await chrome.runtime.sendMessage({ type: "window", cues: cues.filter((c) => c.start >= from && c.start < to), from, to });
+        if (r?.error) throw new Error(r.error);
+        if (id !== currentVideo) return;
+        state = Llm.mergeWindow(state, from, to, r.bits);
+        lastError = "";
+        persist();
+      } finally {
+        inflight = null;
+        refresh();
+      }
+    })();
+    refresh(); // show the busy state
+    return inflight;
+  }
+
+  function ensureAhead() {
+    if (mode !== "ai" || !state || inflight || Date.now() < retryAfter) return;
     const v = videoEl();
-    const s = segments.find((s) => s.start > v.currentTime + 0.5);
+    if (state.hi < v.duration && v.currentTime > state.hi - PREFETCH_SEC) {
+      extend().catch((e) => { lastError = e.message; retryAfter = Date.now() + RETRY_MS; refresh(); });
+    }
+  }
+
+  // Seeked outside what we've analysed: start a fresh window from there.
+  function onSeeked() {
+    if (mode !== "ai" || !state) return;
+    const t = videoEl().currentTime;
+    if (t >= state.lo && t <= state.hi) return;
+    const lo = Math.max(0, t - 30);
+    state = { bits: [], lo, hi: lo };
+    refresh();
+    ensureAhead();
+  }
+
+  // ---- navigation -------------------------------------------------------------------------------
+
+  async function next() {
+    const v = videoEl();
+    const find = () => segments.find((s) => s.start > v.currentTime + 0.5);
+    let s = find();
+    // inside a bit that may still be running (a long story): keep loading until its end shows up
+    for (let i = 0; !s && mode === "ai" && state && state.hi < v.duration && i < MAX_SKIP_WINDOWS; i++) {
+      try { await extend(); } catch (e) { lastError = e.message; retryAfter = Date.now() + RETRY_MS; refresh(); break; }
+      s = find();
+    }
     if (s) v.currentTime = s.start;
   }
 
   function prev() {
     const v = videoEl();
+    if (!segments.length) return;
     const i = currentIndex(v.currentTime);
     v.currentTime = v.currentTime - segments[i].start > 3 || i === 0 ? segments[i].start : segments[i - 1].start;
   }
+
+  // ---- UI ---------------------------------------------------------------------------------------
 
   function renderMarkers() {
     const bar = document.querySelector(".ytp-progress-bar");
@@ -55,27 +126,37 @@
     });
   }
 
-  function show(list, status, aiMode) {
-    segments = list;
-    root.querySelector(".ts-status").textContent = status;
-    root.querySelector(".ts-sens-row").hidden = aiMode; // slider only applies to the basic splitter
+  function statusText() {
+    if (mode !== "ai") return root.dataset.basicStatus || "";
+    const parts = [`${segments.length} bits (AI)`, `analysed to ${fmt(state.hi)}`];
+    if (inflight) parts.push("loading…");
+    if (lastError) parts.push(`error: ${lastError}`);
+    return parts.join(" · ");
+  }
+
+  // Rebuild everything derived from the current state.
+  function refresh() {
+    if (!root) return;
+    const v = videoEl();
+    segments = mode === "ai" ? Llm.toSegments(state, v.duration) : segments;
+    root.querySelector(".ts-sens-row").hidden = mode === "ai"; // slider only applies to the basic splitter
+    root.querySelector(".ts-status").textContent = statusText();
     renderList();
     renderMarkers();
-    tick();
+    tick(false);
   }
 
-  // Basic splitter (no API key, or AI failed).
-  function recompute(note = "") {
-    const res = segment(cues, { duration: videoEl().duration, sensitivity: store.get("sens", 0.5) });
-    show(res.segments, `${res.segments.length} parts (basic split)` + (res.laughCount ? ` · ${res.laughCount} laughs` : "") + note, false);
-  }
-
-  async function aiSplit(id) {
-    try {
-      return await chrome.runtime.sendMessage({ type: "segment", videoId: id, cues, duration: videoEl().duration });
-    } catch (e) {
-      return { error: String(e.message || e) };
+  function tick(prefetch = true) {
+    const v = videoEl();
+    if (!root || !v) return;
+    if (prefetch) ensureAhead();
+    if (!segments.length) {
+      if (inflight) root.querySelector(".ts-now").textContent = "AI is splitting…";
+      return;
     }
+    const i = currentIndex(v.currentTime);
+    root.querySelector(".ts-now").textContent = `${i + 1}/${segments.length}${segments[i].open ? "+" : ""} · ${segments[i].label || ""}${inflight ? " ⏳" : ""}`;
+    root.querySelectorAll(".ts-row").forEach((r) => r.classList.toggle("active", Number(r.dataset.i) === i));
   }
 
   function buildUi(player) {
@@ -99,46 +180,64 @@
     root.querySelector(".ts-toggle").onclick = () => { const p = root.querySelector(".ts-panel"); p.hidden = !p.hidden; };
     const sens = root.querySelector(".ts-sens");
     sens.value = store.get("sens", 0.5);
-    sens.onchange = () => { store.set("sens", Number(sens.value)); recompute(); };
-    // stop YouTube hotkeys/clicks from reacting to our panel
-    root.addEventListener("keydown", (e) => e.stopPropagation());
+    sens.onchange = () => { store.set("sens", Number(sens.value)); basicSplit(); };
+    root.addEventListener("keydown", (e) => e.stopPropagation()); // keep YouTube hotkeys out of our panel
   }
 
-  function tick() {
+  // ---- startup ----------------------------------------------------------------------------------
+
+  // Local algorithm (no API key, or AI unavailable). Instant, covers the whole video.
+  function basicSplit(note = root?.dataset.basicNote || "") {
+    mode = "basic";
+    root.dataset.basicNote = note;
+    const res = segment(cues, { duration: videoEl().duration, sensitivity: store.get("sens", 0.5) });
+    segments = res.segments;
+    root.dataset.basicStatus = `${segments.length} parts (basic split)` + (res.laughCount ? ` · ${res.laughCount} laughs` : "") + note;
+    refresh();
+  }
+
+  async function startAi() {
     const v = videoEl();
-    if (!root || !segments.length || !v) return;
-    const i = currentIndex(v.currentTime);
-    root.querySelector(".ts-now").textContent = `${i + 1}/${segments.length} · ${segments[i].label || ""}`;
-    root.querySelectorAll(".ts-row").forEach((r) => r.classList.toggle("active", Number(r.dataset.i) === i));
+    const t = v.currentTime;
+    const cached = (await chrome.storage.local.get(cacheKey()))[cacheKey()];
+    if (cached && t >= cached.lo && t <= cached.hi) state = cached;
+    else { const lo = Math.max(0, t - 30); state = { bits: [], lo, hi: lo }; }
+    mode = "ai";
+    refresh();
+    if (!state.bits.length || t > state.hi - PREFETCH_SEC) await extend(); // throws if the very first call fails
   }
 
   async function init() {
     const id = new URLSearchParams(location.search).get("v");
     if (location.pathname !== "/watch" || !id || id === currentVideo) return;
     currentVideo = id;
-    cues = null; segments = [];
+    cues = null; segments = []; state = null; inflight = null; lastError = ""; mode = "basic";
     document.getElementById("topic-skipper")?.remove();
     const player = await waitFor(() => document.getElementById("movie_player"));
     const v = await waitFor(() => { const e = videoEl(); return e && e.duration ? e : null; });
-    if (currentVideo !== id) return;
+    if (currentVideo !== id || !v) return;
     buildUi(player);
+    if (!v.dataset.tsBound) { // the <video> element is reused across navigations; bind once
+      v.dataset.tsBound = "1";
+      v.addEventListener("timeupdate", () => tick());
+      v.addEventListener("seeked", onSeeked);
+    }
     try {
       cues = await fetchCues(id);
       if (currentVideo !== id) return;
-      videoEl().addEventListener("timeupdate", tick);
-      root.querySelector(".ts-now").textContent = "AI is splitting…";
-      const ai = await aiSplit(id);
-      if (currentVideo !== id) return;
-      if (ai?.segments?.length) {
-        show(ai.segments, `${ai.segments.length} bits (AI)` + (ai.cached ? " · cached" : ""), true);
-      } else {
-        const why = ai?.error === "no_key" ? " · add an API key in the extension options for AI splitting" : ` · AI failed: ${ai?.error || "no result"}`;
-        console.warn("[topic-skipper] AI split unavailable:", ai?.error);
-        recompute(why);
-      }
     } catch (e) {
       root.querySelector(".ts-now").textContent = "no transcript available";
       console.warn("[topic-skipper]", e);
+      return;
+    }
+    const { apiKey } = await chrome.storage.local.get("apiKey");
+    if (!apiKey) return basicSplit(" · add an API key in the extension options for AI splitting");
+    try {
+      await startAi();
+    } catch (e) {
+      if (currentVideo !== id) return;
+      console.warn("[topic-skipper] AI unavailable:", e.message);
+      basicSplit(` · AI failed: ${e.message}`);
     }
   }
 

@@ -2,13 +2,12 @@
 // extension's service worker and in node tests.
 (function (root) {
   const DEFAULT_MODEL = "claude-haiku-5-5"; // cheapest current model; this job needs no deep reasoning
-  const MAX_CHARS = 200000; // ~50k tokens per request, under Haiku's cheap-pricing tier
   const LINE_SEC = 6;
 
   const SYSTEM = `You split stand-up comedy transcripts into skippable bits so a viewer can jump from one bit to the next.
 
-Input: lines like "[12:05] text" (auto-captions, may contain errors; [Laughter] / [Applause] markers may appear).
-Output: the START timestamp of every bit, copied exactly from an input line.
+Input: an excerpt of a longer show, as lines like "[12:05] text" (auto-captions, may contain errors; [Laughter] / [Applause] markers may appear). The excerpt may begin in the middle of a show and may end in the middle of a bit: still list that last, unfinished bit.
+Output: the START timestamp of every bit, copied exactly from an input line. The first bit starts at the first line.
 
 A bit is ONE of:
 - a single self-contained joke,
@@ -71,18 +70,6 @@ Rules:
     return lines.join("\n");
   }
 
-  function chunkCues(cues, maxChars = MAX_CHARS) {
-    const chunks = [];
-    let cur = [], size = 0;
-    for (const c of cues) {
-      if (size + c.text.length > maxChars && cur.length) { chunks.push(cur); cur = []; size = 0; }
-      cur.push(c);
-      size += c.text.length + 10;
-    }
-    if (cur.length) chunks.push(cur);
-    return chunks;
-  }
-
   async function callApi(transcript, { apiKey, model, fetchImpl }) {
     const res = await fetchImpl("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -109,36 +96,57 @@ Rules:
     return { bits: parsed.bits || [], usage: body.usage };
   }
 
-  // bits: [{start:"m:ss", title, kind}] -> [{start, end, label, kind}] covering [0, duration]
-  function toSegments(bits, duration) {
+  // Raw model bits -> clean, ascending bits inside [from, to); first bit pinned to `from`.
+  function normalizeBits(bits, from, to) {
     const sorted = bits
       .map((b) => ({ start: parseTime(b.start), title: (b.title || "").trim(), kind: b.kind }))
-      .filter((b) => Number.isFinite(b.start) && b.start >= 0 && b.start < duration)
+      .filter((b) => Number.isFinite(b.start) && b.start >= from && b.start < to)
       .sort((a, b) => a.start - b.start);
     const kept = [];
     for (const b of sorted) {
       if (kept.length && b.start - kept[kept.length - 1].start < 10) continue; // model double-listed a boundary
       kept.push(b);
     }
-    if (!kept.length) return [];
-    kept[0].start = 0; // anything before the first listed bit belongs to it
-    return kept.map((b, i) => ({ start: b.start, end: i + 1 < kept.length ? kept[i + 1].start : duration, label: b.title, kind: b.kind }));
+    if (kept.length) kept[0].start = from;
+    return kept;
   }
 
-  async function analyze(cues, duration, { apiKey, model = DEFAULT_MODEL, fetchImpl = fetch }) {
+  // Analyse one window of the transcript: cues with start in [from, to).
+  async function analyzeWindow(cues, { from, to }, { apiKey, model = DEFAULT_MODEL, fetchImpl = fetch }) {
     if (!apiKey) throw new Error("no_key");
-    const bits = [];
-    let inTokens = 0, outTokens = 0;
-    for (const chunk of chunkCues(cues)) {
-      const r = await callApi(buildTranscript(chunk), { apiKey, model, fetchImpl });
-      bits.push(...r.bits);
-      inTokens += r.usage?.input_tokens || 0;
-      outTokens += r.usage?.output_tokens || 0;
-    }
-    return { segments: toSegments(bits, duration), usage: { inTokens, outTokens } };
+    const inWindow = cues.filter((c) => c.start >= from && c.start < to);
+    if (!inWindow.length) return { bits: [], usage: { inTokens: 0, outTokens: 0 } };
+    const r = await callApi(buildTranscript(inWindow), { apiKey, model, fetchImpl });
+    return {
+      bits: normalizeBits(r.bits, from, to),
+      usage: { inTokens: r.usage?.input_tokens || 0, outTokens: r.usage?.output_tokens || 0 },
+    };
   }
 
-  const api = { analyze, buildTranscript, chunkCues, toSegments, parseTime, fmtTime, DEFAULT_MODEL, SYSTEM, SCHEMA };
+  // state = {bits, lo, hi}: bits known for [lo, hi). A new window starts at the last (possibly unfinished)
+  // bit, so its result replaces that bit and everything after it.
+  function mergeWindow(state, from, to, bits) {
+    return { lo: state.lo, hi: to, bits: state.bits.filter((b) => b.start < from).concat(bits) };
+  }
+
+  // The window to analyse next: restart at the unfinished last bit and grow forward by `step`.
+  function nextWindow(state, duration, step) {
+    const last = state.bits[state.bits.length - 1];
+    return { from: last ? last.start : state.lo, to: Math.min(duration, state.hi + step) };
+  }
+
+  function toSegments(state, duration) {
+    const edge = Math.min(state.hi, duration);
+    return state.bits.map((b, i) => ({
+      start: b.start,
+      end: i + 1 < state.bits.length ? state.bits[i + 1].start : edge,
+      label: b.title,
+      kind: b.kind,
+      open: i === state.bits.length - 1 && state.hi < duration, // may still continue past `hi`
+    }));
+  }
+
+  const api = { analyzeWindow, buildTranscript, normalizeBits, mergeWindow, nextWindow, toSegments, parseTime, fmtTime, DEFAULT_MODEL, SYSTEM, SCHEMA };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.TopicSkipperLlm = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
