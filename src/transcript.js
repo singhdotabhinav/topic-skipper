@@ -25,12 +25,17 @@
     return [...tracks].sort((a, b) => score(b) - score(a))[0];
   }
 
+  const log = TopicSkipperLog.createLogger("transcript");
+
   async function viaCaptionTracks(videoId) {
     const html = await (await fetch(`/watch?v=${videoId}`, { credentials: "include" })).text();
     const tracks = extractJson(html, "captionTracks");
+    log("captionTracks", { watchPageChars: html.length, tracks: tracks && tracks.map((t) => ({ lang: t.languageCode, kind: t.kind || "manual" })) });
     if (!tracks || !tracks.length) throw new Error("no caption tracks");
-    const res = await fetch(pickTrack(tracks).baseUrl + "&fmt=json3", { credentials: "include" });
+    const track = pickTrack(tracks);
+    const res = await fetch(track.baseUrl + "&fmt=json3", { credentials: "include" });
     const body = await res.text();
+    log("timedtext", { chosen: track.languageCode, status: res.status, bodyChars: body.length });
     if (!body) throw new Error("empty timedtext response");
     const json = JSON.parse(body);
     return json.events
@@ -67,6 +72,7 @@
       for (let i = 0; i < 30 && !document.querySelector(ROW_SEL); i++) await sleep(250);
     }
     const cues = readRows();
+    log("panel", { openedPanel: opened, rows: cues.length });
     if (opened) {
       // put the page back the way we found it
       document.querySelector('ytd-engagement-panel-section-list-renderer[target-id*="transcript"] #visibility-button button')?.click();
@@ -77,10 +83,14 @@
 
   async function fetchCues(videoId) {
     try {
-      return await viaCaptionTracks(videoId);
+      const cues = await viaCaptionTracks(videoId);
+      log("source", { method: "captionTracks", cues: cues.length });
+      return cues;
     } catch (e) {
-      console.debug("[topic-skipper] caption fetch failed, trying transcript panel:", e.message);
-      return viaTranscriptPanel();
+      log("captionTracks:failed", e.message);
+      const cues = await viaTranscriptPanel();
+      log("source", { method: "transcriptPanel", cues: cues.length });
+      return cues;
     }
   }
 

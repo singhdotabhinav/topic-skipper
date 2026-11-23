@@ -22,6 +22,14 @@ Pick **Ollama** as the provider in the extension options (no API key, no tokens 
 3. Reload the extension and open a stand-up video.
 `llama3.1:8b` handled two independent synthetic sets well (whole stories, one bit per crowd-work person) after prompt tuning, at ~4-12 s per 5-minute window. It is still weaker than Claude Haiku 5.5 on messy real captions, so confirm quality on real specials with the Anthropic provider. Splits are cached per provider.
 
+## Logs
+Everything is logged with a `[topic-skipper HH:MM:SS.mmm] scope:event` prefix. Three places to read it:
+- **In the player:** hover the video → ☰ → **Logs** (scrollable, with a *Copy all* button). It includes the background worker's lines too.
+- **YouTube tab console:** DevTools (⌥⌘J) → Console, filter `topic-skipper`. Content-script lines plus the worker's lines (`bg:`), mirrored back with each response.
+- **Service worker console:** `chrome://extensions` → Topic Skipper → *service worker* link.
+
+Scopes: `transcript:` (which fetch path ran, track list, status, cue counts), `content:` (init, config, cache hit/miss, `window:request`/`response`, `state:merged`, `prefetch:trigger`, `seek`, `nav:next`/`prev`, `track:segment` on each bit change, `track:position` every 10 s with seconds to the analysed edge), `bg:` (the full request to Ollama/Anthropic: URL, model, options, prompt text; then status, latency, token counts, the raw model JSON, and raw vs kept bits after cleanup). API keys are never logged, only "set (N chars)".
+
 ## Test
 `node test/segment.test.js && node test/llm.test.js`
 

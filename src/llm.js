@@ -87,7 +87,11 @@ Correct bits: 0:10 story "Dad refuses directions" / 2:30 crowd_work "Priya the d
     return lines.join("\n");
   }
 
-  async function callAnthropic(transcript, { apiKey, model, fetchImpl }) {
+  const preview = (s, n = 1500) => (s && s.length > n ? s.slice(0, n) + `…(+${s.length - n} chars)` : s);
+
+  async function callAnthropic(transcript, { apiKey, model, fetchImpl, log }) {
+    const t0 = Date.now();
+    log("request", { provider: "anthropic", url: "https://api.anthropic.com/v1/messages", model, effort: "low", systemChars: SYSTEM.length, promptChars: transcript.length, prompt: preview(transcript) });
     const res = await fetchImpl("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -105,17 +109,21 @@ Correct bits: 0:10 story "Dad refuses directions" / 2:30 crowd_work "Priya the d
       }),
     });
     const body = await res.json().catch(() => ({}));
+    log("response", { provider: "anthropic", status: res.status, ms: Date.now() - t0, stop_reason: body.stop_reason, usage: body.usage, error: body?.error?.message });
     if (!res.ok) throw new Error(`Anthropic API ${res.status}: ${body?.error?.message || "request failed"}`);
     if (body.stop_reason === "refusal") throw new Error("model refused the request");
     if (body.stop_reason === "max_tokens") throw new Error("response cut off (max_tokens)");
     const text = (body.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
+    log("response:text", preview(text));
     const parsed = JSON.parse(text);
     return { bits: parsed.bits || [], usage: body.usage };
   }
 
   // Local model via Ollama (no tokens spent). Needs OLLAMA_ORIGINS to allow the extension, see README.
-  async function callOllama(transcript, { model, ollamaUrl, fetchImpl }) {
+  async function callOllama(transcript, { model, ollamaUrl, fetchImpl, log }) {
     const url = `${ollamaUrl.replace(/\/+$/, "")}/api/chat`;
+    const t0 = Date.now();
+    log("request", { provider: "ollama", url, model, options: { temperature: 0, num_ctx: 8192 }, systemChars: SYSTEM.length, promptChars: transcript.length, prompt: preview(transcript) });
     let res;
     try {
       res = await fetchImpl(url, {
@@ -129,13 +137,16 @@ Correct bits: 0:10 story "Dad refuses directions" / 2:30 crowd_work "Priya the d
           options: { temperature: 0, num_ctx: 8192 }, // default context is too small for a 5-minute window
         }),
       });
-    } catch {
+    } catch (e) {
+      log("response", { provider: "ollama", networkError: String(e), ms: Date.now() - t0 });
       throw new Error(`can't reach Ollama at ${ollamaUrl}: is it running?`);
     }
     const body = await res.json().catch(() => ({}));
+    log("response", { provider: "ollama", status: res.status, ms: Date.now() - t0, prompt_eval_count: body.prompt_eval_count, eval_count: body.eval_count, total_duration_s: body.total_duration && +(body.total_duration / 1e9).toFixed(2), load_duration_s: body.load_duration && +(body.load_duration / 1e9).toFixed(2), done_reason: body.done_reason, error: body.error });
     if (res.status === 403) throw new Error('Ollama blocked the extension: start it with OLLAMA_ORIGINS="chrome-extension://*"');
     if (res.status === 404) throw new Error(`Ollama has no model "${model}": run "ollama pull ${model}"`);
     if (!res.ok) throw new Error(`Ollama ${res.status}: ${body?.error || "request failed"}`);
+    log("response:text", preview(body.message?.content));
     const parsed = JSON.parse(body.message?.content || "{}");
     return { bits: parsed.bits || [], usage: { input_tokens: body.prompt_eval_count, output_tokens: body.eval_count } };
   }
@@ -160,17 +171,20 @@ Correct bits: 0:10 story "Dad refuses directions" / 2:30 crowd_work "Priya the d
   // Analyse one window of the transcript: cues with start in [from, to).
   // opts: {provider: "anthropic" | "ollama", apiKey, model, ollamaUrl, fetchImpl}
   async function analyzeWindow(cues, { from, to }, opts) {
-    const { provider = "anthropic", apiKey, fetchImpl = fetch } = opts;
+    const { provider = "anthropic", apiKey, fetchImpl = fetch, log = () => {} } = opts;
     if (provider === "anthropic" && !apiKey) throw new Error("no_key");
     const inWindow = cues.filter((c) => c.start >= from && c.start < to);
+    log("analyze", { provider, from, to, cuesReceived: cues.length, cuesInWindow: inWindow.length });
     if (!inWindow.length) return { bits: [], usage: { inTokens: 0, outTokens: 0 } };
     const transcript = buildTranscript(inWindow);
     const r =
       provider === "ollama"
-        ? await callOllama(transcript, { model: opts.model || DEFAULT_OLLAMA_MODEL, ollamaUrl: opts.ollamaUrl || DEFAULT_OLLAMA_URL, fetchImpl })
-        : await callAnthropic(transcript, { apiKey, model: opts.model || DEFAULT_MODEL, fetchImpl });
+        ? await callOllama(transcript, { model: opts.model || DEFAULT_OLLAMA_MODEL, ollamaUrl: opts.ollamaUrl || DEFAULT_OLLAMA_URL, fetchImpl, log })
+        : await callAnthropic(transcript, { apiKey, model: opts.model || DEFAULT_MODEL, fetchImpl, log });
+    const bits = normalizeBits(r.bits, from, to);
+    log("normalize", { rawBits: r.bits.length, keptBits: bits.length, raw: r.bits.map((b) => `${b.start} ${b.kind} ${b.title}`), kept: bits.map((b) => `${fmtTime(b.start)} ${b.kind} ${b.title}`) });
     return {
-      bits: normalizeBits(r.bits, from, to),
+      bits,
       usage: { inTokens: r.usage?.input_tokens || 0, outTokens: r.usage?.output_tokens || 0 },
     };
   }

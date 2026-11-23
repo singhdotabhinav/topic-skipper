@@ -10,7 +10,7 @@
   "content_scripts": [
     {
       "matches": ["https://www.youtube.com/*"],
-      "js": ["src/segment.js", "src/llm.js", "src/transcript.js", "src/content.js"],
+      "js": ["src/log.js", "src/segment.js", "src/llm.js", "src/transcript.js", "src/content.js"],
       "css": ["src/content.css"],
       "run_at": "document_idle"
     }

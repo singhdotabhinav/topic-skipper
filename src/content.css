@@ -10,3 +10,7 @@
 #topic-skipper .ts-row { display: block; width: 100%; text-align: left; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #topic-skipper .ts-row.active { background: rgba(255,255,255,.25); }
 .ts-tick { position: absolute; top: 0; bottom: 0; width: 3px; background: #fff; opacity: .85; pointer-events: none; z-index: 40; }
+#topic-skipper .ts-logs { margin-top: 8px; }
+#topic-skipper .ts-logs summary { cursor: pointer; opacity: .8; }
+#topic-skipper .ts-copylog { font-size: 12px; border: 1px solid rgba(255,255,255,.3); }
+#topic-skipper .ts-log { margin: 6px 0 0; max-height: 220px; overflow: auto; font: 11px/1.35 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; user-select: text; }
