@@ -20,7 +20,7 @@ Pick **Ollama** as the provider in the extension options (no API key, no tokens 
 1. Install [Ollama](https://ollama.com/download) and pull a model: `ollama pull llama3.1:8b` (~5 GB; fits a 16 GB Mac).
 2. Let the extension talk to it, then restart Ollama: `launchctl setenv OLLAMA_ORIGINS "chrome-extension://*"` (menu-bar app) or run `OLLAMA_ORIGINS="chrome-extension://*" ollama serve`.
 3. Reload the extension and open a stand-up video.
-Local 8B models split less accurately than Claude Haiku 5.5; use them to test the plumbing and UX, and switch back to Anthropic to judge quality. Splits are cached per provider.
+`llama3.1:8b` handled two independent synthetic sets well (whole stories, one bit per crowd-work person) after prompt tuning, at ~4-12 s per 5-minute window. It is still weaker than Claude Haiku 5.5 on messy real captions, so confirm quality on real specials with the Anthropic provider. Splits are cached per provider.
 
 ## Test
 `node test/segment.test.js && node test/llm.test.js`

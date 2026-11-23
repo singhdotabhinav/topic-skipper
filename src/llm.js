@@ -17,11 +17,26 @@ A bit is ONE of:
 - one crowd-work exchange with one audience member, until the comedian moves to a different person or goes back to prepared material.
 
 Rules:
+- Prefer FEWER, longer bits. If in doubt, do NOT split. A joke is typically 20-90 seconds; a story or a crowd-work exchange is typically 2-8 minutes.
 - Start a new bit only where the comedian clearly moves to a new joke, a new story, or a different audience member. Never split inside a bit.
+- Inside a story, new scenes, "and then..." beats, callbacks and extra punchlines are NOT new bits. The story is one bit until the comedian leaves it for something unrelated.
+- Inside crowd work, follow-up questions and jokes about the SAME person (job, spouse, hobbies) are NOT new bits. A new bit starts only when the comedian turns to a different person or goes back to prepared material.
 - A follow-up punchline on the same premise belongs to the same bit.
 - Do not group or relate bits to each other.
 - Greetings/intro and goodbyes/outro may be their own bits with kind "other".
-- Timestamps must be ascending. Titles: at most 6 words, describing the bit (for crowd work, name the person if said).`;
+- Timestamps must be ascending. Titles: at most 6 words, describing the bit (for crowd work, name the person if said).
+
+Example (a story with several beats, then crowd work with one person, then another person):
+[0:10] my dad refused to ask for directions
+[0:40] we ended up in another state
+[1:20] and my mom whispered ask someone
+[2:00] he finally asked a gas station guy
+[2:30] okay you in the blue shirt what's your name
+[2:40] Priya I'm a dentist
+[3:10] married? five years
+[3:50] you in the hat, name?
+[4:00] Raj I sell insurance
+Correct bits: 0:10 story "Dad refuses directions" / 2:30 crowd_work "Priya the dentist" / 3:50 crowd_work "Raj, insurance". The story's beats at 0:40, 1:20, 2:00 and Priya's follow-ups at 2:40, 3:10 are NOT separate bits.`;
 
   const SCHEMA = {
     type: "object",
@@ -133,11 +148,13 @@ Rules:
       .sort((a, b) => a.start - b.start);
     const kept = [];
     for (const b of sorted) {
-      if (kept.length && b.start - kept[kept.length - 1].start < 10) continue; // model double-listed a boundary
+      if (kept.length && b.start - kept[kept.length - 1].start < 15) continue; // model double-listed a boundary
       kept.push(b);
     }
-    if (kept.length) kept[0].start = from;
-    return kept;
+    // small models over-split: adjacent bits with the same kind and title are one bit
+    const merged = kept.filter((b, i) => !(i && b.kind === kept[i - 1].kind && b.title.toLowerCase() === kept[i - 1].title.toLowerCase()));
+    if (merged.length) merged[0].start = from;
+    return merged;
   }
 
   // Analyse one window of the transcript: cues with start in [from, to).

@@ -25,6 +25,20 @@ const nb = normalizeBits(
 );
 assert.deepStrictEqual(nb.map((b) => [b.start, b.title]), [[300, "Story"]]);
 
+// small models over-split: same kind + same title back to back is one bit; near-duplicate starts collapse
+const om = normalizeBits(
+  [
+    { start: "1:10", title: "Dad story", kind: "story" },
+    { start: "2:10", title: "dad story", kind: "story" },
+    { start: "4:10", title: "Priya", kind: "crowd_work" },
+    { start: "4:22", title: "Priya: dentist", kind: "crowd_work" }, // 12s after previous: double-listed boundary
+    { start: "5:45", title: "Raj", kind: "crowd_work" },
+  ],
+  0,
+  480
+);
+assert.deepStrictEqual(om.map((b) => [b.start, b.title]), [[0, "Dad story"], [250, "Priya"], [345, "Raj"]]);
+
 // --- windowing: a story that runs past the first window --------------------------------------
 const D = 1000;
 let state = { bits: [], lo: 0, hi: 0 };
