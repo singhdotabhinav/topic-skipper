@@ -55,13 +55,27 @@
     });
   }
 
-  function recompute() {
-    const v = videoEl();
-    const res = segment(cues, { duration: v.duration, sensitivity: store.get("sens", 0.5) });
-    segments = res.segments;
-    root.querySelector(".ts-status").textContent = `${segments.length} parts` + (res.laughCount ? ` · ${res.laughCount} laughs` : "");
+  function show(list, status, aiMode) {
+    segments = list;
+    root.querySelector(".ts-status").textContent = status;
+    root.querySelector(".ts-sens-row").hidden = aiMode; // slider only applies to the basic splitter
     renderList();
     renderMarkers();
+    tick();
+  }
+
+  // Basic splitter (no API key, or AI failed).
+  function recompute(note = "") {
+    const res = segment(cues, { duration: videoEl().duration, sensitivity: store.get("sens", 0.5) });
+    show(res.segments, `${res.segments.length} parts (basic split)` + (res.laughCount ? ` · ${res.laughCount} laughs` : "") + note, false);
+  }
+
+  async function aiSplit(id) {
+    try {
+      return await chrome.runtime.sendMessage({ type: "segment", videoId: id, cues, duration: videoEl().duration });
+    } catch (e) {
+      return { error: String(e.message || e) };
+    }
   }
 
   function buildUi(player) {
@@ -75,7 +89,7 @@
         <button class="ts-toggle" title="Show parts">☰</button>
       </div>
       <div class="ts-panel" hidden>
-        <label>Split more finely <input class="ts-sens" type="range" min="0" max="1" step="0.05"></label>
+        <label class="ts-sens-row">Split more finely <input class="ts-sens" type="range" min="0" max="1" step="0.05"></label>
         <div class="ts-status"></div>
         <div class="ts-list"></div>
       </div>`;
@@ -111,8 +125,17 @@
     try {
       cues = await fetchCues(id);
       if (currentVideo !== id) return;
-      recompute();
       videoEl().addEventListener("timeupdate", tick);
+      root.querySelector(".ts-now").textContent = "AI is splitting…";
+      const ai = await aiSplit(id);
+      if (currentVideo !== id) return;
+      if (ai?.segments?.length) {
+        show(ai.segments, `${ai.segments.length} bits (AI)` + (ai.cached ? " · cached" : ""), true);
+      } else {
+        const why = ai?.error === "no_key" ? " · add an API key in the extension options for AI splitting" : ` · AI failed: ${ai?.error || "no result"}`;
+        console.warn("[topic-skipper] AI split unavailable:", ai?.error);
+        recompute(why);
+      }
     } catch (e) {
       root.querySelector(".ts-now").textContent = "no transcript available";
       console.warn("[topic-skipper]", e);

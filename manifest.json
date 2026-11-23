@@ -1,8 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Topic Skipper",
-  "version": "0.1.0",
-  "description": "Skip to the next topic or joke instead of 10 seconds at a time.",
+  "version": "0.2.0",
+  "description": "Skip to the next joke, story or topic instead of 10 seconds at a time.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://api.anthropic.com/*"],
+  "background": { "service_worker": "src/background.js" },
+  "options_ui": { "page": "src/options.html", "open_in_tab": true },
   "content_scripts": [
     {
       "matches": ["https://www.youtube.com/*"],
