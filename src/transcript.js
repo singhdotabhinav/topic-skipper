@@ -39,23 +39,40 @@
   }
 
   // Fallback: open YouTube's own transcript panel and read it.
+  // YouTube ships two transcript panel markups; support both.
+  const ROW_SEL = "transcript-segment-view-model, ytd-transcript-segment-renderer";
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  function readRows() {
+    return [...document.querySelectorAll(ROW_SEL)]
+      .map((r) => {
+        const ts = (r.querySelector(".ytwTranscriptSegmentViewModelTimestamp, .segment-timestamp")?.textContent || "0:00").trim();
+        const start = ts.split(":").reduce((a, p) => a * 60 + Number(p), 0);
+        const text = (r.querySelector("span[role=text], .segment-text")?.textContent || "").trim();
+        return { start, dur: 0, text };
+      })
+      .filter((c) => c.text);
+  }
+
   async function viaTranscriptPanel() {
-    const sel = "ytd-transcript-segment-renderer";
-    if (!document.querySelector(sel)) {
-      const btn = [...document.querySelectorAll("ytd-video-description-transcript-section-renderer button, button")].find((b) =>
-        /show transcript/i.test(b.textContent || b.getAttribute("aria-label") || "")
-      );
+    let opened = false;
+    if (!document.querySelector(ROW_SEL)) {
+      // the "Show transcript" button lives in the collapsed description
+      document.querySelector("#description-inline-expander #expand")?.click();
+      await sleep(500);
+      const btn = [...document.querySelectorAll("button")].find((b) => /show transcript/i.test(b.textContent || b.getAttribute("aria-label") || ""));
       if (!btn) throw new Error("transcript button not found");
       btn.click();
-      for (let i = 0; i < 20 && !document.querySelector(sel); i++) await new Promise((r) => setTimeout(r, 250));
+      opened = true;
+      for (let i = 0; i < 30 && !document.querySelector(ROW_SEL); i++) await sleep(250);
     }
-    const rows = [...document.querySelectorAll(sel)];
-    if (!rows.length) throw new Error("transcript panel empty");
-    return rows.map((r) => {
-      const ts = r.querySelector(".segment-timestamp")?.textContent.trim() || "0:00";
-      const start = ts.split(":").reduce((a, p) => a * 60 + Number(p), 0);
-      return { start, dur: 0, text: r.querySelector(".segment-text")?.textContent.trim() || "" };
-    });
+    const cues = readRows();
+    if (opened) {
+      // put the page back the way we found it
+      document.querySelector('ytd-engagement-panel-section-list-renderer[target-id*="transcript"] #visibility-button button')?.click();
+    }
+    if (!cues.length) throw new Error("transcript panel empty");
+    return cues;
   }
 
   async function fetchCues(videoId) {
