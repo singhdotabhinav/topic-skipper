@@ -11,7 +11,7 @@
   let cues = null, segments = [], currentVideo = null, root = null;
   let mode = "basic"; // "ai": lazy windowed Claude analysis; "basic": local algorithm over the whole transcript
   let state = null; // ai mode: {bits, lo, hi}, known bits for [lo, hi)
-  let inflight = null, retryAfter = 0, lastError = "";
+  let inflight = null, retryAfter = 0, lastError = "", provider = "anthropic";
 
   const store = {
     get: (k, d) => { try { return JSON.parse(localStorage.getItem("topicSkipper." + k)) ?? d; } catch { return d; } },
@@ -20,7 +20,7 @@
 
   const videoEl = () => document.querySelector("video.html5-main-video");
   const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
-  const cacheKey = () => `seg2:${currentVideo}`;
+  const cacheKey = () => `seg2:${provider}:${currentVideo}`; // local-model splits are rougher, so cache them apart
 
   function currentIndex(t) {
     let idx = 0;
@@ -128,7 +128,7 @@
 
   function statusText() {
     if (mode !== "ai") return root.dataset.basicStatus || "";
-    const parts = [`${segments.length} bits (AI)`, `analysed to ${fmt(state.hi)}`];
+    const parts = [`${segments.length} bits (${provider === "ollama" ? "local" : "AI"})`, `analysed to ${fmt(state.hi)}`];
     if (inflight) parts.push("loading…");
     if (lastError) parts.push(`error: ${lastError}`);
     return parts.join(" · ");
@@ -230,8 +230,9 @@
       console.warn("[topic-skipper]", e);
       return;
     }
-    const { apiKey } = await chrome.storage.local.get("apiKey");
-    if (!apiKey) return basicSplit(" · add an API key in the extension options for AI splitting");
+    const cfg = await chrome.storage.local.get(["apiKey", "provider"]);
+    provider = cfg.provider === "ollama" ? "ollama" : "anthropic";
+    if (provider === "anthropic" && !cfg.apiKey) return basicSplit(" · add an API key (or pick Ollama) in the extension options for AI splitting");
     try {
       await startAi();
     } catch (e) {

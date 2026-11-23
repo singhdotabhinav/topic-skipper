@@ -1,7 +1,7 @@
 importScripts("llm.js");
 
-// Content scripts ask us to analyse one window of a transcript; the API call happens here so the key
-// never touches the page.
+// Content scripts ask us to analyse one window of a transcript; the model call happens here so the
+// API key never touches the page.
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type !== "window") return;
   run(msg).then(sendResponse, (e) => sendResponse({ error: e.message }));
@@ -9,6 +9,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 async function run({ cues, from, to }) {
-  const { apiKey, model } = await chrome.storage.local.get(["apiKey", "model"]);
-  return TopicSkipperLlm.analyzeWindow(cues, { from, to }, { apiKey, model: model || undefined });
+  const cfg = await chrome.storage.local.get(["provider", "apiKey", "model", "ollamaModel", "ollamaUrl"]);
+  const ollama = cfg.provider === "ollama";
+  return TopicSkipperLlm.analyzeWindow(cues, { from, to }, {
+    provider: ollama ? "ollama" : "anthropic",
+    apiKey: cfg.apiKey,
+    model: (ollama ? cfg.ollamaModel : cfg.model) || undefined,
+    ollamaUrl: cfg.ollamaUrl || undefined,
+  });
 }

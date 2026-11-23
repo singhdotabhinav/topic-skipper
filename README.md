@@ -15,6 +15,13 @@ Keys: `]` next part, `[` previous part. The slider in the ☰ panel changes how 
 ## Install (dev)
 `chrome://extensions` → Developer mode → Load unpacked → pick this folder → open any YouTube video with captions.
 
+## Free local testing with Ollama
+Pick **Ollama** as the provider in the extension options (no API key, no tokens spent).
+1. Install [Ollama](https://ollama.com/download) and pull a model: `ollama pull llama3.1:8b` (~5 GB; fits a 16 GB Mac).
+2. Let the extension talk to it, then restart Ollama: `launchctl setenv OLLAMA_ORIGINS "chrome-extension://*"` (menu-bar app) or run `OLLAMA_ORIGINS="chrome-extension://*" ollama serve`.
+3. Reload the extension and open a stand-up video.
+Local 8B models split less accurately than Claude Haiku 5.5; use them to test the plumbing and UX, and switch back to Anthropic to judge quality. Splits are cached per provider.
+
 ## Test
 `node test/segment.test.js && node test/llm.test.js`
 

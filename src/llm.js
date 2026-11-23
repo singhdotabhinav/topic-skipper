@@ -2,6 +2,8 @@
 // extension's service worker and in node tests.
 (function (root) {
   const DEFAULT_MODEL = "claude-haiku-5-5"; // cheapest current model; this job needs no deep reasoning
+  const DEFAULT_OLLAMA_MODEL = "llama3.1:8b"; // for free local testing; weaker than Haiku, expect rougher splits
+  const DEFAULT_OLLAMA_URL = "http://localhost:11434";
   const LINE_SEC = 6;
 
   const SYSTEM = `You split stand-up comedy transcripts into skippable bits so a viewer can jump from one bit to the next.
@@ -70,7 +72,7 @@ Rules:
     return lines.join("\n");
   }
 
-  async function callApi(transcript, { apiKey, model, fetchImpl }) {
+  async function callAnthropic(transcript, { apiKey, model, fetchImpl }) {
     const res = await fetchImpl("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -96,6 +98,33 @@ Rules:
     return { bits: parsed.bits || [], usage: body.usage };
   }
 
+  // Local model via Ollama (no tokens spent). Needs OLLAMA_ORIGINS to allow the extension, see README.
+  async function callOllama(transcript, { model, ollamaUrl, fetchImpl }) {
+    const url = `${ollamaUrl.replace(/\/+$/, "")}/api/chat`;
+    let res;
+    try {
+      res = await fetchImpl(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model,
+          stream: false,
+          messages: [{ role: "system", content: SYSTEM }, { role: "user", content: transcript }],
+          format: SCHEMA, // constrains output to the JSON schema
+          options: { temperature: 0, num_ctx: 8192 }, // default context is too small for a 5-minute window
+        }),
+      });
+    } catch {
+      throw new Error(`can't reach Ollama at ${ollamaUrl}: is it running?`);
+    }
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 403) throw new Error('Ollama blocked the extension: start it with OLLAMA_ORIGINS="chrome-extension://*"');
+    if (res.status === 404) throw new Error(`Ollama has no model "${model}": run "ollama pull ${model}"`);
+    if (!res.ok) throw new Error(`Ollama ${res.status}: ${body?.error || "request failed"}`);
+    const parsed = JSON.parse(body.message?.content || "{}");
+    return { bits: parsed.bits || [], usage: { input_tokens: body.prompt_eval_count, output_tokens: body.eval_count } };
+  }
+
   // Raw model bits -> clean, ascending bits inside [from, to); first bit pinned to `from`.
   function normalizeBits(bits, from, to) {
     const sorted = bits
@@ -112,11 +141,17 @@ Rules:
   }
 
   // Analyse one window of the transcript: cues with start in [from, to).
-  async function analyzeWindow(cues, { from, to }, { apiKey, model = DEFAULT_MODEL, fetchImpl = fetch }) {
-    if (!apiKey) throw new Error("no_key");
+  // opts: {provider: "anthropic" | "ollama", apiKey, model, ollamaUrl, fetchImpl}
+  async function analyzeWindow(cues, { from, to }, opts) {
+    const { provider = "anthropic", apiKey, fetchImpl = fetch } = opts;
+    if (provider === "anthropic" && !apiKey) throw new Error("no_key");
     const inWindow = cues.filter((c) => c.start >= from && c.start < to);
     if (!inWindow.length) return { bits: [], usage: { inTokens: 0, outTokens: 0 } };
-    const r = await callApi(buildTranscript(inWindow), { apiKey, model, fetchImpl });
+    const transcript = buildTranscript(inWindow);
+    const r =
+      provider === "ollama"
+        ? await callOllama(transcript, { model: opts.model || DEFAULT_OLLAMA_MODEL, ollamaUrl: opts.ollamaUrl || DEFAULT_OLLAMA_URL, fetchImpl })
+        : await callAnthropic(transcript, { apiKey, model: opts.model || DEFAULT_MODEL, fetchImpl });
     return {
       bits: normalizeBits(r.bits, from, to),
       usage: { inTokens: r.usage?.input_tokens || 0, outTokens: r.usage?.output_tokens || 0 },
@@ -146,7 +181,7 @@ Rules:
     }));
   }
 
-  const api = { analyzeWindow, buildTranscript, normalizeBits, mergeWindow, nextWindow, toSegments, parseTime, fmtTime, DEFAULT_MODEL, SYSTEM, SCHEMA };
+  const api = { analyzeWindow, buildTranscript, normalizeBits, mergeWindow, nextWindow, toSegments, parseTime, fmtTime, DEFAULT_MODEL, DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, SYSTEM, SCHEMA };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.TopicSkipperLlm = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

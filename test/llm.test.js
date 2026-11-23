@@ -82,6 +82,29 @@ assert.strictEqual(toSegments(state, D).at(-1).open, false);
   assert.deepStrictEqual(r.bits.map((b) => b.start), [300, 450]);
   assert.deepStrictEqual(r.usage, { inTokens: 500, outTokens: 40 });
 
+  // ollama: no key needed, local endpoint, schema-constrained, deterministic
+  let o;
+  const ollamaFetch = async (url, init) => {
+    o = { url, body: JSON.parse(init.body) };
+    return { ok: true, status: 200, json: async () => ({ message: { content: JSON.stringify({ bits: [{ start: "5:00", title: "Local bit", kind: "joke" }] }) }, prompt_eval_count: 900, eval_count: 30 }) };
+  };
+  const lr = await analyzeWindow(cues, { from: 300, to: 600 }, { provider: "ollama", fetchImpl: ollamaFetch });
+  assert.strictEqual(o.url, "http://localhost:11434/api/chat");
+  assert.strictEqual(o.body.model, "llama3.1:8b");
+  assert.strictEqual(o.body.stream, false);
+  assert.strictEqual(o.body.options.temperature, 0);
+  assert(o.body.options.num_ctx >= 8192);
+  assert.strictEqual(o.body.format.type, "object");
+  assert.strictEqual(o.body.messages[0].role, "system");
+  assert.deepStrictEqual(lr.bits.map((b) => [b.start, b.title]), [[300, "Local bit"]]);
+  assert.deepStrictEqual(lr.usage, { inTokens: 900, outTokens: 30 });
+  const down = async () => { throw new TypeError("fetch failed"); };
+  await assert.rejects(analyzeWindow(cues, { from: 0, to: 300 }, { provider: "ollama", fetchImpl: down }), /can't reach Ollama/);
+  const forbidden = async () => ({ ok: false, status: 403, json: async () => ({}) });
+  await assert.rejects(analyzeWindow(cues, { from: 0, to: 300 }, { provider: "ollama", fetchImpl: forbidden }), /OLLAMA_ORIGINS/);
+  const noModel = async () => ({ ok: false, status: 404, json: async () => ({ error: "model not found" }) });
+  await assert.rejects(analyzeWindow(cues, { from: 0, to: 300 }, { provider: "ollama", model: "x:1b", fetchImpl: noModel }), /ollama pull x:1b/);
+
   await assert.rejects(analyzeWindow(cues, { from: 0, to: 300 }, { apiKey: "", fetchImpl }), /no_key/);
   const bad = async () => ({ ok: false, status: 401, json: async () => ({ error: { message: "invalid x-api-key" } }) });
   await assert.rejects(analyzeWindow(cues, { from: 0, to: 300 }, { apiKey: "k", fetchImpl: bad }), /401: invalid x-api-key/);
